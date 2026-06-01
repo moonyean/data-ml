@@ -3,187 +3,144 @@ import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { Sprout, MapPin, FileText, MessageSquare, ArrowLeft, Download, Sparkles } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from "recharts";
+import {
+  Sprout, MapPin, ArrowLeft, Sparkles, Leaf, FlaskConical, CloudRain, Thermometer,
+} from "lucide-react";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from "recharts";
+import {
+  predictCrop, getCropRegions, getFertilizer,
+  type PredictResponse, type CropRegionsResponse, type FertilizerResponse,
+} from "../../lib/api";
 
-interface FarmData {
-  pH: number;
-  organicMatter: number;
-  phosphorus: number;
-  potassium: number;
-}
+// 작물 이모지 매핑
+const CROP_EMOJI: Record<string, string> = {
+  rice: "🌾", maize: "🌽", apple: "🍎", grapes: "🍇",
+  watermelon: "🍉", muskmelon: "🍈", orange: "🍊", banana: "🍌",
+  mango: "🥭", coconut: "🥥", coffee: "☕", cotton: "🌿",
+  jute: "🌿", papaya: "🍑", pomegranate: "🍎", blackgram: "🫘",
+  chickpea: "🫘", kidneybeans: "🫘", lentil: "🫘",
+  motherbeans: "🫘", mungbean: "🫘", pigeonpeas: "🫘",
+};
 
-interface CropRecommendation {
-  name: string;
-  matchRate: number;
-  suitability: string;
-  icon: string;
-  distance: number;
-}
-
-interface NutrientDeficiency {
-  name: string;
-  current: number;
-  optimal: number;
-  deficit: number;
-  unit: string;
-}
+type LoadingStep = "predict" | "regions" | "fertilizer" | "done" | "error";
 
 export function ResultsDashboard() {
   const navigate = useNavigate();
-  const [farmData, setFarmData] = useState<FarmData | null>(null);
-  const [crop, setCrop] = useState<CropRecommendation | null>(null);
-  const [deficiencies, setDeficiencies] = useState<NutrientDeficiency[]>([]);
-  const [llmText, setLlmText] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-  const [typingIndex, setTypingIndex] = useState(0);
 
-  // Standard crop requirements (based on Korean RDA standards)
-  const cropStandards = {
-    딸기: { pH: 5.8, om: 30, p: 450, k: 0.65 },
-    사과: { pH: 6.0, om: 25, p: 350, k: 0.60 },
-    벼: { pH: 6.5, om: 25, p: 300, k: 0.55 },
-    배추: { pH: 6.5, om: 28, p: 400, k: 0.70 },
-    토마토: { pH: 6.2, om: 32, p: 500, k: 0.75 },
-  };
+  const [step, setStep] = useState<LoadingStep>("predict");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const [predict, setPredict] = useState<PredictResponse | null>(null);
+  const [regions, setRegions] = useState<CropRegionsResponse | null>(null);
+  const [fertilizer, setFertilizer] = useState<FertilizerResponse | null>(null);
 
   useEffect(() => {
-    const storedData = sessionStorage.getItem('farmData');
-    if (!storedData) {
-      navigate("/input");
-      return;
-    }
+    const stored = sessionStorage.getItem("farmData");
+    if (!stored) { navigate("/input"); return; }
 
-    const data: FarmData = JSON.parse(storedData);
-    setFarmData(data);
+    const formData = JSON.parse(stored);
 
-    // Calculate Euclidean distance for each crop
-    const distances = Object.entries(cropStandards).map(([cropName, standard]) => {
-      const distance = Math.sqrt(
-        Math.pow(data.pH - standard.pH, 2) +
-        Math.pow((data.organicMatter - standard.om) / 10, 2) +
-        Math.pow((data.phosphorus - standard.p) / 100, 2) +
-        Math.pow((data.potassium - standard.k) * 10, 2)
-      );
-      return { cropName, distance };
-    });
+    (async () => {
+      try {
+        // 1. 작물 예측
+        setStep("predict");
+        const predictRes = await predictCrop(formData);
+        setPredict(predictRes);
 
-    // Find the crop with minimum distance
-    const bestMatch = distances.reduce((min, curr) =>
-      curr.distance < min.distance ? curr : min
-    );
+        const crop = predictRes.recommended_crop;
 
-    const matchRate = Math.max(0, Math.min(100, 100 - (bestMatch.distance * 10)));
+        // 2. 지역 정보 + 비료 정보 병렬 호출
+        setStep("regions");
+        const [regionsRes, fertilizerRes] = await Promise.all([
+          getCropRegions(crop),
+          getFertilizer(crop),
+        ]);
+        setRegions(regionsRes);
+        setFertilizer(fertilizerRes);
 
-    const cropIcons: Record<string, string> = {
-      딸기: "🍓",
-      사과: "🍎",
-      벼: "🌾",
-      배추: "🥬",
-      토마토: "🍅"
-    };
-
-    const recommendation: CropRecommendation = {
-      name: bestMatch.cropName,
-      matchRate: Math.round(matchRate * 10) / 10,
-      suitability: matchRate >= 90 ? "최적 (Excellent)" : matchRate >= 75 ? "우수 (Good)" : "양호 (Fair)",
-      icon: cropIcons[bestMatch.cropName] || "🌱",
-      distance: bestMatch.distance
-    };
-
-    setCrop(recommendation);
-
-    // Calculate nutrient deficiencies
-    const standard = cropStandards[bestMatch.cropName as keyof typeof cropStandards];
-    const deficits: NutrientDeficiency[] = [
-      {
-        name: "유기물",
-        current: data.organicMatter,
-        optimal: standard.om,
-        deficit: ((data.organicMatter - standard.om) / standard.om) * 100,
-        unit: "g/kg"
-      },
-      {
-        name: "인산",
-        current: data.phosphorus,
-        optimal: standard.p,
-        deficit: ((data.phosphorus - standard.p) / standard.p) * 100,
-        unit: "mg/kg"
-      },
-      {
-        name: "칼륨",
-        current: data.potassium,
-        optimal: standard.k,
-        deficit: ((data.potassium - standard.k) / standard.k) * 100,
-        unit: "cmol⁺/kg"
+        setStep("done");
+      } catch (e) {
+        setErrorMsg(e instanceof Error ? e.message : "알 수 없는 오류");
+        setStep("error");
       }
-    ];
-
-    setDeficiencies(deficits);
-
-    // Start typing animation after a short delay
-    setTimeout(() => {
-      setIsTyping(true);
-    }, 500);
+    })();
   }, [navigate]);
 
-  const fullLlmResponse = farmData && crop ? `**✨ Gemini AI의 실시간 농업 처방 리포트**
-
-입력하신 토양 성분을 분석한 결과, ${crop.name} 재배에 최적화된 토양 조건을 갖추고 있습니다.
-
-**📊 토양 성분 분석 결과:**
-• 현재 pH ${farmData.pH.toFixed(1)} (권장: ${cropStandards[crop.name as keyof typeof cropStandards].pH})
-• 유기물 ${farmData.organicMatter}g/kg (${deficiencies[0]?.deficit > 0 ? `과잉 ${Math.abs(Math.round(deficiencies[0].deficit))}%` : `부족 ${Math.abs(Math.round(deficiencies[0].deficit))}%`})
-• 유효인산 ${farmData.phosphorus}mg/kg (${deficiencies[1]?.deficit > 0 ? `과잉 ${Math.abs(Math.round(deficiencies[1].deficit))}%` : `부족 ${Math.abs(Math.round(deficiencies[1].deficit))}%`})
-• 치환성 칼륨 ${farmData.potassium}cmol⁺/kg (${deficiencies[2]?.deficit > 0 ? `과잉 ${Math.abs(Math.round(deficiencies[2].deficit))}%` : `부족 ${Math.abs(Math.round(deficiencies[2].deficit))}%`})
-
-**💡 비료 사용 최적화 방안:**
-${deficiencies.some(d => d.deficit < -10) ?
-  `현재 토양 상태에서는 일부 성분이 부족합니다. 적절한 비료 투입으로 생산성을 20-30% 향상시킬 수 있습니다.` :
-  deficiencies.some(d => d.deficit > 10) ?
-  `일부 성분이 과잉 상태입니다. 비료 사용을 ${Math.round(Math.max(...deficiencies.map(d => d.deficit)))}% 절감하여 경제성을 높이고 환경 부담을 줄일 수 있습니다.` :
-  `현재 토양 조건이 우수합니다. 유지 관리 수준의 비료 투입만으로 충분합니다.`
-}
-
-**🌍 권장 정착 지역: 충청남도 논산시**
-
-논산시는 ${crop.name} 주산지로서 다음과 같은 장점이 있습니다:
-
-• **청년 귀농인 스마트팜 지원 정책**: 최대 3억원 시설비 지원 (국비 70%, 지방비 30%)
-• **맞춤형 영농 기술 교육**: 논산시 농업기술센터에서 ${crop.name} 재배 전문 교육 과정 운영
-• **판로 지원**: 지역 농협 계약재배 프로그램 및 온라인 직거래 플랫폼 연계
-• **정착 지원금**: 귀농 가구당 월 100만원, 최대 3년간 지원
-
-**📞 문의처:**
-논산시 농업기술센터: 041-746-5671
-귀농귀촌 종합센터: 041-746-8954
-
-지금 바로 상담 신청하시면 1:1 맞춤형 정착 컨설팅을 받으실 수 있습니다.` : "";
-
-  // LLM typing effect
-  useEffect(() => {
-    if (isTyping && typingIndex < fullLlmResponse.length) {
-      const timeout = setTimeout(() => {
-        setLlmText(fullLlmResponse.slice(0, typingIndex + 1));
-        setTypingIndex(typingIndex + 1);
-      }, 15);
-      return () => clearTimeout(timeout);
-    } else if (typingIndex >= fullLlmResponse.length) {
-      setIsTyping(false);
-    }
-  }, [isTyping, typingIndex, fullLlmResponse]);
-
-  if (!farmData || !crop) {
-    return null;
+  // ── 로딩 화면 ─────────────────────────────────────────────
+  if (step !== "done" && step !== "error") {
+    const messages: Record<LoadingStep, string> = {
+      predict: "🤖 ML 모델이 최적 작물을 분석 중입니다...",
+      regions: "🗺️ Gemini AI가 재배 지역 정보를 생성 중입니다...",
+      fertilizer: "",
+      done: "",
+      error: "",
+    };
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50 to-background">
+        <div className="text-center space-y-4">
+          <div className="text-5xl animate-bounce">🌱</div>
+          <p className="text-lg font-medium text-green-700">{messages[step]}</p>
+          <div className="flex justify-center gap-1 mt-2">
+            {(["predict", "regions"] as LoadingStep[]).map((s) => (
+              <div
+                key={s}
+                className={`h-2 w-8 rounded-full transition-all duration-500 ${
+                  step === s ? "bg-green-600" : "bg-green-200"
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  // Prepare chart data
-  const chartData = deficiencies.map(d => ({
-    name: d.name,
-    현재값: d.current,
-    권장값: d.optimal,
-    차이: Math.abs(d.current - d.optimal)
-  }));
+  // ── 에러 화면 ─────────────────────────────────────────────
+  if (step === "error") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center space-y-4 max-w-md">
+          <div className="text-5xl">⚠️</div>
+          <h2 className="text-xl font-bold">API 연결 실패</h2>
+          <p className="text-muted-foreground text-sm">{errorMsg}</p>
+          <p className="text-xs text-muted-foreground">
+            백엔드 서버(localhost:8000)가 실행 중인지 확인하세요.
+          </p>
+          <Button onClick={() => navigate("/input")} className="bg-green-600 hover:bg-green-700 text-white">
+            다시 입력하기
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!predict || !regions) return null;
+
+  const topCrop = predict.recommended_crop;
+  const emoji = CROP_EMOJI[topCrop] ?? "🌱";
+
+  // 비료 차트 데이터
+  const fertChartData = fertilizer
+    ? [
+        {
+          name: "질소 (N)",
+          밑거름: fertilizer.pre_fertilizer.nitrogen,
+          웃거름: fertilizer.post_fertilizer.nitrogen,
+        },
+        {
+          name: "인산 (P)",
+          밑거름: fertilizer.pre_fertilizer.phosphorus,
+          웃거름: fertilizer.post_fertilizer.phosphorus,
+        },
+        {
+          name: "칼리 (K)",
+          밑거름: fertilizer.pre_fertilizer.potassium,
+          웃거름: fertilizer.post_fertilizer.potassium,
+        },
+      ]
+    : [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -201,27 +158,33 @@ ${deficiencies.some(d => d.deficit < -10) ?
         </div>
       </header>
 
-      {/* Results Content */}
-      <main className="container mx-auto px-4 py-8">
-        {/* Success Banner */}
-        <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-8">
+      <main className="container mx-auto px-4 py-8 space-y-8">
+
+        {/* 결과 배너 */}
+        <div className="bg-green-50 border border-green-200 rounded-lg p-6">
           <div className="flex items-center gap-3">
-            <Sparkles className="h-6 w-6 text-green-600" />
+            <Sparkles className="h-6 w-6 text-green-600 shrink-0" />
             <div>
               <h2 className="text-2xl font-bold text-green-900">
-                AI 분석 완료: 귀하의 토양에 가장 적합한 작물은 <span className="text-green-600">{crop.name}</span> 입니다.
+                AI 분석 완료: 최적 작물은{" "}
+                <span className="text-green-600">
+                  {emoji} {regions.crop_ko}
+                </span>{" "}
+                입니다
               </h2>
               <p className="text-sm text-green-700 mt-1">
-                유클리드 거리 기반 ML 분석 결과 (거리: {crop.distance.toFixed(3)})
+                신뢰도 {(predict.confidence * 100).toFixed(1)}% | Random Forest ML 모델 기반
               </p>
             </div>
           </div>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
-          {/* Left Column: ML Results */}
+
+          {/* ── 좌측 컬럼 ─────────────────────────────────────── */}
           <div className="space-y-6">
-            {/* Crop Card */}
+
+            {/* 추천 작물 카드 */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -230,151 +193,216 @@ ${deficiencies.some(d => d.deficit < -10) ?
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
-                <div className="text-center py-8">
-                  <div className="text-6xl mb-4">{crop.icon}</div>
-                  <h3 className="text-3xl font-bold mb-2">{crop.name}</h3>
-                  <Badge variant="secondary" className="text-lg px-4 py-1">
-                    {crop.suitability}
+                <div className="text-center py-6">
+                  <div className="text-6xl mb-3">{emoji}</div>
+                  <h3 className="text-3xl font-bold mb-1">{regions.crop_ko}</h3>
+                  <p className="text-sm text-muted-foreground mb-3">{topCrop}</p>
+                  <Badge
+                    variant="secondary"
+                    className={`text-base px-4 py-1 ${
+                      predict.confidence >= 0.9 ? "bg-green-100 text-green-800" :
+                      predict.confidence >= 0.7 ? "bg-yellow-100 text-yellow-800" :
+                      "bg-gray-100 text-gray-700"
+                    }`}
+                  >
+                    {predict.confidence >= 0.9 ? "최적 (Excellent)" :
+                     predict.confidence >= 0.7 ? "우수 (Good)" : "양호 (Fair)"}
                   </Badge>
                 </div>
 
-                <div className="space-y-2">
+                {/* 신뢰도 바 */}
+                <div className="space-y-1">
                   <div className="flex justify-between text-sm">
-                    <span>종합 적합도 점수</span>
-                    <span className="font-medium">{crop.matchRate}%</span>
+                    <span>종합 적합도</span>
+                    <span className="font-medium">{(predict.confidence * 100).toFixed(1)}%</span>
                   </div>
                   <div className="h-3 bg-muted rounded-full overflow-hidden">
                     <div
                       className="h-full bg-green-600 transition-all duration-1000"
-                      style={{ width: `${crop.matchRate}%` }}
+                      style={{ width: `${predict.confidence * 100}%` }}
                     />
                   </div>
                 </div>
 
-                <div className="pt-4 border-t space-y-3">
-                  <h4 className="font-medium">입력된 토양 데이터</h4>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="bg-muted/50 rounded p-3">
-                      <div className="text-muted-foreground">pH</div>
-                      <div className="font-medium">{farmData.pH.toFixed(1)}</div>
-                    </div>
-                    <div className="bg-muted/50 rounded p-3">
-                      <div className="text-muted-foreground">유기물</div>
-                      <div className="font-medium">{farmData.organicMatter} g/kg</div>
-                    </div>
-                    <div className="bg-muted/50 rounded p-3">
-                      <div className="text-muted-foreground">인산</div>
-                      <div className="font-medium">{farmData.phosphorus} mg/kg</div>
-                    </div>
-                    <div className="bg-muted/50 rounded p-3">
-                      <div className="text-muted-foreground">칼륨</div>
-                      <div className="font-medium">{farmData.potassium} cmol⁺/kg</div>
-                    </div>
+                {/* Top 3 */}
+                <div className="pt-4 border-t">
+                  <h4 className="font-medium mb-3 text-sm">후보 작물 Top 3</h4>
+                  <div className="space-y-2">
+                    {predict.top3.map((c, i) => (
+                      <div key={c.crop} className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted-foreground w-4">{i + 1}</span>
+                          <span>{CROP_EMOJI[c.crop] ?? "🌱"} {c.crop}</span>
+                        </div>
+                        <div className="flex items-center gap-2 w-32">
+                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-green-500"
+                              style={{ width: `${c.confidence * 100}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-muted-foreground w-10 text-right">
+                            {(c.confidence * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Nutrient Deficiency Chart */}
+            {/* 비료 처방 카드 */}
+            {fertilizer ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <FlaskConical className="h-5 w-5 text-blue-600" />
+                    비료 표준사용량 처방
+                    <Badge variant="outline" className="text-xs ml-1">
+                      {fertilizer.crop_kr} · 코드 {fertilizer.fstd_crop_code}
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {fertilizer.note && (
+                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">
+                      ⚠️ {fertilizer.note}
+                    </p>
+                  )}
+
+                  {/* 처방량 테이블 */}
+                  <div className="grid grid-cols-4 text-sm font-medium text-center border-b pb-2">
+                    <div />
+                    <div>질소 (N)</div>
+                    <div>인산 (P)</div>
+                    <div>칼리 (K)</div>
+                  </div>
+                  {[
+                    { label: "밑거름", data: fertilizer.pre_fertilizer },
+                    { label: "웃거름", data: fertilizer.post_fertilizer },
+                  ].map(({ label, data }) => (
+                    <div key={label} className="grid grid-cols-4 text-sm text-center">
+                      <div className="text-muted-foreground font-medium">{label}</div>
+                      <div>{data.nitrogen} <span className="text-xs text-muted-foreground">kg/10a</span></div>
+                      <div>{data.phosphorus} <span className="text-xs text-muted-foreground">kg/10a</span></div>
+                      <div>{data.potassium} <span className="text-xs text-muted-foreground">kg/10a</span></div>
+                    </div>
+                  ))}
+
+                  {/* 비료 차트 */}
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={fertChartData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="밑거름" fill="#22c55e" />
+                      <Bar dataKey="웃거름" fill="#86efac" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-xs text-muted-foreground text-center">
+                    출처: 국립농업과학원 비료 표준사용량 처방 (OpenAPI)
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card className="border-dashed">
+                <CardContent className="pt-6 text-center text-muted-foreground text-sm">
+                  <FlaskConical className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                  <p>국내 비료 표준사용량 데이터가 없는 작물입니다.</p>
+                  <p className="text-xs mt-1">(열대성 작물 등은 국내 기준 미등록)</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {/* ── 우측 컬럼 ─────────────────────────────────────── */}
+          <div className="space-y-6">
+
+            {/* 재배 최적 지역 */}
+            <Card className="border-2 border-primary/20">
+              <CardHeader className="bg-primary/5">
+                <CardTitle className="flex items-center gap-2">
+                  <MapPin className="h-5 w-5 text-primary" />
+                  Gemini AI 재배 최적 지역
+                  {regions.source === "static_fallback" && (
+                    <Badge variant="outline" className="text-xs">기본 데이터</Badge>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-4">
+                {regions.best_regions.map((r, i) => (
+                  <div key={i} className="border rounded-lg p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-sm">📍 {r.region}</span>
+                      <Badge variant="secondary" className="text-xs">{r.climate}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{r.reason}</p>
+                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground pt-1">
+                      <div className="flex items-center gap-1">
+                        <Thermometer className="h-3 w-3" />
+                        연평균 {r.avg_temperature_c}°C
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <CloudRain className="h-3 w-3" />
+                        연강수 {r.avg_rainfall_mm}mm
+                      </div>
+                      <div className="col-span-2">토양: {r.soil_type}</div>
+                      <div className="col-span-2">재배 시기: {r.growing_season}</div>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            {/* 적정 재배 조건 + 영농 팁 */}
             <Card>
               <CardHeader>
-                <CardTitle>처방 데이터: 성분별 현황 분석</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <Leaf className="h-5 w-5 text-green-600" />
+                  적정 재배 조건 &amp; 영농 팁
+                </CardTitle>
               </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="현재값" fill="#22c55e" />
-                    <Bar dataKey="권장값" fill="#94a3b8" />
-                  </BarChart>
-                </ResponsiveContainer>
-
-                <div className="mt-4 space-y-2">
-                  {deficiencies.map((def, idx) => (
-                    <div key={idx} className="flex items-center justify-between text-sm p-2 bg-muted/30 rounded">
-                      <span>{def.name}</span>
-                      <Badge variant={Math.abs(def.deficit) < 10 ? "default" : "secondary"}>
-                        {def.deficit > 0 ? `+${Math.round(def.deficit)}%` : `${Math.round(def.deficit)}%`}
-                      </Badge>
+              <CardContent className="space-y-4">
+                {/* 적정 조건 */}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  {[
+                    { label: "기온", value: regions.ideal_conditions.temperature_range },
+                    { label: "강수량", value: regions.ideal_conditions.rainfall_range },
+                    { label: "토양 pH", value: regions.ideal_conditions.ph_range },
+                    { label: "습도", value: regions.ideal_conditions.humidity_range },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="bg-muted/50 rounded p-3">
+                      <div className="text-muted-foreground text-xs">{label}</div>
+                      <div className="font-medium mt-0.5">{value}</div>
                     </div>
                   ))}
                 </div>
+
+                {/* 수확 정보 */}
+                <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
+                  <span className="font-medium text-green-800">🌾 수확 정보</span>
+                  <p className="text-green-700 mt-1 text-xs leading-relaxed">{regions.harvest_info}</p>
+                </div>
+
+                {/* 영농 팁 */}
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">💡 영농 팁</h4>
+                  <ul className="space-y-2">
+                    {regions.farming_tips.map((tip, i) => (
+                      <li key={i} className="text-xs text-muted-foreground flex gap-2">
+                        <span className="text-green-600 shrink-0">✓</span>
+                        <span>{tip}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </CardContent>
             </Card>
+
           </div>
-
-          {/* Right Column: Gemini LLM Analysis */}
-          <div className="space-y-6">
-            <Card className="border-2 border-primary/20">
-              <CardHeader className="bg-primary/5">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                    Gemini AI 실시간 해석 리포트
-                  </CardTitle>
-                </div>
-                {isTyping && (
-                  <Badge variant="secondary" className="w-fit gap-2 mt-2">
-                    <div className="h-2 w-2 bg-green-600 rounded-full animate-pulse" />
-                    Gemini가 분석 중입니다...
-                  </Badge>
-                )}
-              </CardHeader>
-              <CardContent className="pt-6">
-                <div className="prose prose-sm max-w-none">
-                  <div className="whitespace-pre-wrap text-foreground leading-relaxed">
-                    {llmText}
-                    {isTyping && <span className="inline-block w-2 h-4 bg-foreground animate-pulse ml-1" />}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Action Cards */}
-            <div className="grid grid-cols-2 gap-4">
-              <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-                <CardContent className="pt-6 text-center">
-                  <MapPin className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                  <p className="text-sm font-medium">지역 상세 정보</p>
-                </CardContent>
-              </Card>
-              <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-                <CardContent className="pt-6 text-center">
-                  <FileText className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                  <p className="text-sm font-medium">정책 전문 보기</p>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Chat Input Preview */}
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="Gemini에게 추가 질문하기..."
-                    className="flex-1 px-3 py-2 border border-border rounded-md bg-input-background"
-                  />
-                  <Button className="gap-2">
-                    <MessageSquare className="h-4 w-4" />
-                    전송
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-
-        {/* Bottom Actions */}
-        <div className="flex gap-4 mt-8 justify-center">
-          <Button variant="outline" size="lg" className="gap-2">
-            <Download className="h-4 w-4" />
-            처방전 PDF 저장하기
-          </Button>
         </div>
       </main>
     </div>
