@@ -9,31 +9,23 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import {
-  predictCrop, getCropRegions, getFertilizer,
-  type PredictResponse, type CropRegionsResponse, type FertilizerResponse,
-} from "../../lib/api";
 
-// 작물 이모지 매핑
-const CROP_EMOJI: Record<string, string> = {
-  rice: "🌾", maize: "🌽", apple: "🍎", grapes: "🍇",
-  watermelon: "🍉", muskmelon: "🍈", orange: "🍊", banana: "🍌",
-  mango: "🥭", coconut: "🥥", coffee: "☕", cotton: "🌿",
-  jute: "🌿", papaya: "🍑", pomegranate: "🍎", blackgram: "🫘",
-  chickpea: "🫘", kidneybeans: "🫘", lentil: "🫘",
-  motherbeans: "🫘", mungbean: "🫘", pigeonpeas: "🫘",
-};
+import { predictCrop, getCropRegions, getFertilizer } from "../../api";
+import type { PredictResponse, CropRegionsResponse, FertilizerResponse } from "../../api";
+import { CROP_EMOJI } from "../../constants";
+import { resolveErrorMessage } from "../../handlers";
+import { formatConfidence, getSuitabilityLabel, getSuitabilityColor } from "../../utils";
 
-type LoadingStep = "predict" | "regions" | "fertilizer" | "done" | "error";
+type LoadingStep = "predict" | "regions" | "done" | "error";
 
 export function ResultsDashboard() {
   const navigate = useNavigate();
 
-  const [step, setStep] = useState<LoadingStep>("predict");
+  const [step, setStep]       = useState<LoadingStep>("predict");
   const [errorMsg, setErrorMsg] = useState("");
 
-  const [predict, setPredict] = useState<PredictResponse | null>(null);
-  const [regions, setRegions] = useState<CropRegionsResponse | null>(null);
+  const [predict,    setPredict]    = useState<PredictResponse | null>(null);
+  const [regions,    setRegions]    = useState<CropRegionsResponse | null>(null);
   const [fertilizer, setFertilizer] = useState<FertilizerResponse | null>(null);
 
   useEffect(() => {
@@ -49,32 +41,29 @@ export function ResultsDashboard() {
         const predictRes = await predictCrop(formData);
         setPredict(predictRes);
 
-        const crop = predictRes.recommended_crop;
-
         // 2. 지역 정보 + 비료 정보 병렬 호출
         setStep("regions");
         const [regionsRes, fertilizerRes] = await Promise.all([
-          getCropRegions(crop),
-          getFertilizer(crop),
+          getCropRegions(predictRes.recommended_crop),
+          getFertilizer(predictRes.recommended_crop),
         ]);
         setRegions(regionsRes);
         setFertilizer(fertilizerRes);
 
         setStep("done");
       } catch (e) {
-        setErrorMsg(e instanceof Error ? e.message : "알 수 없는 오류");
+        setErrorMsg(resolveErrorMessage(e));
         setStep("error");
       }
     })();
   }, [navigate]);
 
-  // ── 로딩 화면 ─────────────────────────────────────────────
+  // ── 로딩 화면 ──────────────────────────────────────────────
   if (step !== "done" && step !== "error") {
     const messages: Record<LoadingStep, string> = {
       predict: "🤖 ML 모델이 최적 작물을 분석 중입니다...",
       regions: "🗺️ Gemini AI가 재배 지역 정보를 생성 중입니다...",
-      fertilizer: "",
-      done: "",
+      done:  "",
       error: "",
     };
     return (
@@ -97,7 +86,7 @@ export function ResultsDashboard() {
     );
   }
 
-  // ── 에러 화면 ─────────────────────────────────────────────
+  // ── 에러 화면 ──────────────────────────────────────────────
   if (step === "error") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -119,26 +108,14 @@ export function ResultsDashboard() {
   if (!predict || !regions) return null;
 
   const topCrop = predict.recommended_crop;
-  const emoji = CROP_EMOJI[topCrop] ?? "🌱";
+  const emoji   = CROP_EMOJI[topCrop] ?? "🌱";
 
   // 비료 차트 데이터
   const fertChartData = fertilizer
     ? [
-        {
-          name: "질소 (N)",
-          밑거름: fertilizer.pre_fertilizer.nitrogen,
-          웃거름: fertilizer.post_fertilizer.nitrogen,
-        },
-        {
-          name: "인산 (P)",
-          밑거름: fertilizer.pre_fertilizer.phosphorus,
-          웃거름: fertilizer.post_fertilizer.phosphorus,
-        },
-        {
-          name: "칼리 (K)",
-          밑거름: fertilizer.pre_fertilizer.potassium,
-          웃거름: fertilizer.post_fertilizer.potassium,
-        },
+        { name: "질소 (N)",  밑거름: fertilizer.pre_fertilizer.nitrogen,   웃거름: fertilizer.post_fertilizer.nitrogen },
+        { name: "인산 (P)",  밑거름: fertilizer.pre_fertilizer.phosphorus, 웃거름: fertilizer.post_fertilizer.phosphorus },
+        { name: "칼리 (K)",  밑거름: fertilizer.pre_fertilizer.potassium,  웃거름: fertilizer.post_fertilizer.potassium },
       ]
     : [];
 
@@ -167,13 +144,10 @@ export function ResultsDashboard() {
             <div>
               <h2 className="text-2xl font-bold text-green-900">
                 AI 분석 완료: 최적 작물은{" "}
-                <span className="text-green-600">
-                  {emoji} {regions.crop_ko}
-                </span>{" "}
-                입니다
+                <span className="text-green-600">{emoji} {regions.crop_ko}</span> 입니다
               </h2>
               <p className="text-sm text-green-700 mt-1">
-                신뢰도 {(predict.confidence * 100).toFixed(1)}% | Random Forest ML 모델 기반
+                신뢰도 {formatConfidence(predict.confidence)} | Random Forest ML 모델 기반
               </p>
             </div>
           </div>
@@ -181,7 +155,7 @@ export function ResultsDashboard() {
 
         <div className="grid lg:grid-cols-2 gap-8">
 
-          {/* ── 좌측 컬럼 ─────────────────────────────────────── */}
+          {/* ── 좌측 컬럼 ───────────────────────────────────── */}
           <div className="space-y-6">
 
             {/* 추천 작물 카드 */}
@@ -197,16 +171,8 @@ export function ResultsDashboard() {
                   <div className="text-6xl mb-3">{emoji}</div>
                   <h3 className="text-3xl font-bold mb-1">{regions.crop_ko}</h3>
                   <p className="text-sm text-muted-foreground mb-3">{topCrop}</p>
-                  <Badge
-                    variant="secondary"
-                    className={`text-base px-4 py-1 ${
-                      predict.confidence >= 0.9 ? "bg-green-100 text-green-800" :
-                      predict.confidence >= 0.7 ? "bg-yellow-100 text-yellow-800" :
-                      "bg-gray-100 text-gray-700"
-                    }`}
-                  >
-                    {predict.confidence >= 0.9 ? "최적 (Excellent)" :
-                     predict.confidence >= 0.7 ? "우수 (Good)" : "양호 (Fair)"}
+                  <Badge variant="secondary" className={`text-base px-4 py-1 ${getSuitabilityColor(predict.confidence)}`}>
+                    {getSuitabilityLabel(predict.confidence)}
                   </Badge>
                 </div>
 
@@ -214,7 +180,7 @@ export function ResultsDashboard() {
                 <div className="space-y-1">
                   <div className="flex justify-between text-sm">
                     <span>종합 적합도</span>
-                    <span className="font-medium">{(predict.confidence * 100).toFixed(1)}%</span>
+                    <span className="font-medium">{formatConfidence(predict.confidence)}</span>
                   </div>
                   <div className="h-3 bg-muted rounded-full overflow-hidden">
                     <div
@@ -236,13 +202,10 @@ export function ResultsDashboard() {
                         </div>
                         <div className="flex items-center gap-2 w-32">
                           <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-green-500"
-                              style={{ width: `${c.confidence * 100}%` }}
-                            />
+                            <div className="h-full bg-green-500" style={{ width: `${c.confidence * 100}%` }} />
                           </div>
                           <span className="text-xs text-muted-foreground w-10 text-right">
-                            {(c.confidence * 100).toFixed(0)}%
+                            {formatConfidence(c.confidence, 0)}
                           </span>
                         </div>
                       </div>
@@ -271,7 +234,6 @@ export function ResultsDashboard() {
                     </p>
                   )}
 
-                  {/* 처방량 테이블 */}
                   <div className="grid grid-cols-4 text-sm font-medium text-center border-b pb-2">
                     <div />
                     <div>질소 (N)</div>
@@ -290,7 +252,6 @@ export function ResultsDashboard() {
                     </div>
                   ))}
 
-                  {/* 비료 차트 */}
                   <ResponsiveContainer width="100%" height={200}>
                     <BarChart data={fertChartData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" />
@@ -318,7 +279,7 @@ export function ResultsDashboard() {
             )}
           </div>
 
-          {/* ── 우측 컬럼 ─────────────────────────────────────── */}
+          {/* ── 우측 컬럼 ───────────────────────────────────── */}
           <div className="space-y-6">
 
             {/* 재배 최적 지역 */}
@@ -342,12 +303,10 @@ export function ResultsDashboard() {
                     <p className="text-xs text-muted-foreground leading-relaxed">{r.reason}</p>
                     <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground pt-1">
                       <div className="flex items-center gap-1">
-                        <Thermometer className="h-3 w-3" />
-                        연평균 {r.avg_temperature_c}°C
+                        <Thermometer className="h-3 w-3" />연평균 {r.avg_temperature_c}°C
                       </div>
                       <div className="flex items-center gap-1">
-                        <CloudRain className="h-3 w-3" />
-                        연강수 {r.avg_rainfall_mm}mm
+                        <CloudRain className="h-3 w-3" />연강수 {r.avg_rainfall_mm}mm
                       </div>
                       <div className="col-span-2">토양: {r.soil_type}</div>
                       <div className="col-span-2">재배 시기: {r.growing_season}</div>
@@ -366,13 +325,12 @@ export function ResultsDashboard() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* 적정 조건 */}
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   {[
-                    { label: "기온", value: regions.ideal_conditions.temperature_range },
-                    { label: "강수량", value: regions.ideal_conditions.rainfall_range },
+                    { label: "기온",     value: regions.ideal_conditions.temperature_range },
+                    { label: "강수량",   value: regions.ideal_conditions.rainfall_range },
                     { label: "토양 pH", value: regions.ideal_conditions.ph_range },
-                    { label: "습도", value: regions.ideal_conditions.humidity_range },
+                    { label: "습도",     value: regions.ideal_conditions.humidity_range },
                   ].map(({ label, value }) => (
                     <div key={label} className="bg-muted/50 rounded p-3">
                       <div className="text-muted-foreground text-xs">{label}</div>
@@ -381,13 +339,11 @@ export function ResultsDashboard() {
                   ))}
                 </div>
 
-                {/* 수확 정보 */}
                 <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
                   <span className="font-medium text-green-800">🌾 수확 정보</span>
                   <p className="text-green-700 mt-1 text-xs leading-relaxed">{regions.harvest_info}</p>
                 </div>
 
-                {/* 영농 팁 */}
                 <div className="space-y-2">
                   <h4 className="text-sm font-medium">💡 영농 팁</h4>
                   <ul className="space-y-2">
