@@ -12,7 +12,7 @@ export function LandingPage() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sprout className="h-6 w-6 text-green-600" />
-            <span className="text-xl font-semibold">Farmlink AI</span>
+            <span className="text-xl font-semibold">작목 메이트</span>
           </div>
           <nav>
             <a href="#about" className="text-muted-foreground hover:text-foreground transition-colors">
