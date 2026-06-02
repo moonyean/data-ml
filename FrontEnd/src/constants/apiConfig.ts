@@ -1,4 +1,4 @@
-export const BASE_URL = "http://localhost:8000";
+export const BASE_URL = "https://data-ml-be.onrender.com";
 
 export const ENDPOINTS = {
   PREDICT: "/predict",
